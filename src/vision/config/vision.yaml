@@ -1,0 +1,88 @@
+camera:
+  type: d-robotics
+  camera_info_topic: /boostercamera/head/rgb/camera_info
+  intrin_wait_timeout_sec: 3.0
+  intrin:
+    fx: 208.6297
+    fy: 208.6297
+    cx: 243.132202
+    cy: 214.284058
+    distortion_model: 0
+    distortion_coeffs:
+      []
+  extrin:
+    -
+      - 0.0110081527
+      - 0.0188039206
+      - 0.999762595
+      - 0.0224848595
+    -
+      - -0.999936223
+      - 0.00271454034
+      - 0.0109590078
+      - 0.0586135313
+    -
+      - -0.00250782352
+      - -0.999819577
+      - 0.0188325997
+      - -0.0237083547
+    -
+      - 0
+      - 0
+      - 0
+      - 1
+  pitch_compensation: 0
+  yaw_compensation: 0
+  z_compensation: 0
+detection_model:
+  model_path: ./src/vision/model/best_digua_second_10.3.engine
+  confidence_threshold: 0.2
+  nms_threshold: 0.4
+  classnames: [Ball, Goalpost, Person, LCross, TCross, XCross, PenaltyPoint, Opponent, BRMarker]
+  post_process:
+    single_ball_assumption: false
+    confidence_thresholds:
+      Ball: 0.2
+      Goalpost: 0.2
+      Person: 0.2
+      LCross: 0.1
+      TCross: 0.1
+      XCross: 0.1
+      PenaltyPoint: 0.1
+      Opponent: 0.5
+      BRMarker: 0.2
+segmentation_model:
+  model_path: ./src/vision/model/best_seg_orin_10.3.engine
+  confidence_threshold: 0.3
+  nms_threshold: 0.9
+use_depth: false
+ball_pose_estimator:
+  use_depth: false
+  ball_size: 3
+  x_compensation: 0.06
+  y_compensation: -0.06
+  down_sample_leaf_size: 0.01
+  cluster_distance_threshold: 0.01
+  fitting_distance_threshold: 0.01
+  minimum_cluster_size: 150
+  filter_distance: 1.2
+  check_ball_height: true
+human_like_pose_estimator:
+  use_depth: false
+  down_sample_leaf_size: 0.01
+  fitting_distance_threshold: 0.01
+  statistic_outlier_multiplier: 0.01
+field_marker_pose_estimator:
+  refine: false
+  line_segment_area_threshold: 75
+calibration:
+  sync_max_time_diff_ms: 1400
+  offset:
+    exclude_distance: 2.0
+    zero_translation: true
+    field_marker_path: ./src/vision/config/field.yaml
+  handeye:
+    calibration_time: 2026-09-22-18-28-44
+    reprojection_error: 2.480983301097587
+misc:
+  save_data_nonstationary: true

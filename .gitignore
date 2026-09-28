@@ -1,0 +1,28 @@
+# Generated build/install/log output
+/build/
+/install/
+/log/
+
+# Runtime logs and temporary data
+*.log
+*.tmp
+*.swp
+
+# IDE and OS metadata
+.vscode/*
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Generated model/runtime artifacts
+*.engine
+*.onnx
+*.pt
+*.pth
+*.wts
+
+# Keep source model files only when explicitly tracked; generated/install copies stay ignored
