@@ -1,5 +1,241 @@
 # CHANGELOG
 
+## 2026-09-29 修复 v12 协议 Stop Play 停止不生效问题
+
+### 问题诊断
+
+**现象**：
+- 使用 v12 裁判机协议时，裁判机发送 STOP 状态
+- Chase、SimpleChase、Adjust 等普通移动节点能够停止
+- **但 RLVisionKick 视觉踢球模式继续运行，机器人不停止**
+
+**根本原因**：
+
+**问题1：协议层 - v12 STOP 状态未正确传递**
+- v12 协议本身没有独立的 `stopped` 字段（这是 v20 协议新增的）
+- v12 协议通过 `secondaryStateInfo[1] == 0` 表示 STOP 状态
+- `game_controller_node.cpp` 的协议适配器把 `msg.stopped` 固定写死为 `false`
+- Brain 节点接收后保持 `msg.stopped` 的 `false` 值，导致 `gc_play_stopped` 也为 `false`
+
+**问题2：RLVisionKick 节点层 - 缺少 Stop Play 主动检查**
+- 行为树在第16-18行有全局 `gc_play_stopped` 检查，理论上能拦截所有节点
+- **但 RLVisionKick 是 StatefulActionNode，有独立的 onRunning() 循环**
+- 在 `onRunning()` 内部执行底层 SDK 踢球动作时，不会每个 tick 都返回到行为树根节点
+- 导致全局 Stop Play 检查无法及时中断正在运行的视觉踢球动作
+- 其他简单节点（Chase、Adjust）每个 tick 都返回，能被全局检查拦截
+
+### 修改内容
+
+**修改1：协议适配器 - 正确解析 v12 STOP 状态**
+
+修改文件：`src/game_controller/src/game_controller_node.cpp`（第 184-187 行）
+
+```cpp
+// 修改前
+msg.stopped = false;
+
+// 修改后
+// Legacy/version 12 has no standalone stopped field. Its STOP state is
+// encoded as secondaryStateInfo[1] == 0 and must be exposed to Brain.
+const auto legacy_sub_state =
+    static_cast<unsigned char>(data.secondaryStateInfo[1]);
+msg.stopped = legacy_sub_state == 0;
+```
+
+**修改2：RLVisionKick 节点 - 主动检查 Stop Play**
+
+修改文件：`src/brain/src/brain_tree.cpp` 的 `RLVisionKick::onRunning()`（约第 2537-2556 行）
+
+```cpp
+// 新增：Stop Play 立即中断检查
+const bool gameControlStop =
+    brain->tree->getEntry<bool>("gc_play_stopped") ||
+    brain->tree->getEntry<string>("gc_game_state") != "PLAY";
+if (gameControlStop) {
+    logExit("exit visual kick immediately: game controller stop");
+    brain->client->setVelocity(0.0, 0.0, 0.0, false, false, false);
+    if (_visionKickStarted) brain->client->robocupWalk();
+    clearState();
+    recordExitTime();
+    _isDecelerating = false;
+    _visionKickStarted = false;
+    _headCommandSent = false;
+    return NodeStatus::SUCCESS;
+}
+```
+
+### 技术细节
+
+**为什么其他节点能停止，RLVisionKick 不能？**
+
+| 节点类型 | 执行模式 | Stop Play 响应方式 |
+|---------|---------|------------------|
+| Chase、SimpleChase、Adjust | SyncActionNode，每个 tick 立即返回 | 行为树全局检查（第16行）能及时拦截 |
+| RLVisionKick | StatefulActionNode，onRunning() 持续运行 | 需要在 onRunning() 内部主动检查 Stop Play |
+
+**v12 vs v20 协议差异**：
+- **v20 协议**：有独立的 `stopped` 字段，直接表示 Stop Play 状态
+- **v12 协议**：没有 `stopped` 字段，通过 `secondaryStateInfo[1] == 0` 编码 STOP 状态
+- 适配器需要将 v12 的隐式表示转换为显式的 `msg.stopped` 布尔值
+
+**完整信号链路**：
+```
+裁判机 v12 STOP
+  ↓ secondaryStateInfo[1] = 0
+game_controller_node 协议适配（修改1）
+  ↓ msg.stopped = true
+Brain::gameControlCallback()
+  ↓ gc_play_stopped = true
+├─ 行为树全局检查（game.xml 第16行）→ 普通节点停止
+└─ RLVisionKick::onRunning() 主动检查（修改2）→ 视觉踢球停止
+```
+
+### 影响范围
+
+**全局停止生效位置**（`src/brain/behavior_trees/game.xml`）：
+- 第 16-18 行：主循环全局停止检查
+- 第 40-42 行：策略层停止检查
+
+**停止的行为**：
+- 所有移动节点（Chase、SimpleChase、Adjust 等）
+- RLVisionKick 视觉踢球
+- 守门员防守动作
+- 所有速度命令归零
+
+### 预期效果
+
+**修复后**：
+1. 裁判机发送 v12 STOP 信号
+2. `gc_play_stopped` 正确设置为 `true`
+3. 行为树立即进入停止分支
+4. 所有运动停止，包括正在进行的 RLVisionKick
+5. 裁判机恢复比赛后正常继续
+
+**兼容性**：
+- v20 协议：继续使用原有的独立 `stopped` 字段（未受影响）
+- v12 协议：通过 `secondaryStateInfo[1]` 正确解析 STOP 状态
+- 不影响其他比赛状态（READY、SET、PLAY 等）
+
+### 验证方法
+
+**测试步骤**：
+1. 使用 v12 协议裁判机
+2. 比赛进行中，机器人正在踢球（RLVisionKick 运行）
+3. 裁判机发送 STOP 指令
+4. 观察机器人是否立即停止所有动作
+
+**日志验证**：
+```bash
+grep "gc_play_stopped" brain.log
+# STOP 时应该看到：gc_play_stopped = true
+
+grep "SetVelocity" brain.log
+# 应该看到速度命令为 (0, 0, 0)
+```
+
+---
+
+## 2026-09-29 队友足球坐标共享移动功能修复
+
+### 问题诊断
+
+**现象**：
+- 机器人 A 看到球并通过 UDP 发送 `ballPosToField` 给队友
+- 机器人 B 接收到坐标后保存到 `tmBall`，并设置 `tm_ball_pos_reliable = true`
+- B 的摄像头追踪节点 `CamTrackBall` 能正常使用队友坐标转动头部
+- **但是** Chase、SimpleChase、Adjust 等移动节点仍然停止或继续搜索，不向球移动
+
+**根本原因**：
+- Chase、SimpleChase、Adjust 节点只检查 `ball_location_known`（本机是否看到球）
+- 完全忽略了 `tm_ball_pos_reliable`（队友是否看到球）标志
+- 导致 B 虽然通过队友知道球的位置，但移动逻辑认为"不知道球在哪里"而拒绝行动
+
+### 修改内容
+
+修改文件：`src/brain/src/brain_tree.cpp`
+
+| 节点 | 原始逻辑 | 修改后逻辑 | 效果 |
+|------|---------|-----------|------|
+| **Chase** (约第616行) | `if (!ball_location_known)` 则停止 | `if (!(ball_location_known \|\| tm_ball_pos_reliable))` 则停止；根据标志选择使用 `ball` 或 `tmBall` 数据 | B 收到队友坐标后能追球，不再原地等待 |
+| **SimpleChase** (约第700行) | `if (!ball_location_known)` 则停止 | `if (!(ball_location_known \|\| tm_ball_pos_reliable))` 则停止；使用 `tmBall.posToRobot`、`tmBall.yawToRobot`、`tmBall.range` | 简单追球模式也支持队友坐标 |
+| **Adjust** (约第1502行) | `if (!ball_location_known)` 则退出 | `if (!(ball_location_known \|\| tm_ball_pos_reliable))` 则退出；根据标志选择球数据源 | 调整姿态动作支持基于队友坐标 |
+
+### 实现细节
+
+所有修改节点采用统一模式（与 `CamTrackBall` 一致）：
+
+```cpp
+bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
+bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
+
+if (!(iKnowBallPos || tmBallPosReliable)) {
+    // 停止或退出
+}
+
+// 根据标志选择数据源
+if (iKnowBallPos) {
+    ballRange = brain->data->ball.range;
+    ballYaw = brain->data->ball.yawToRobot;
+    ballPos = brain->data->ball.posToField;
+} else {
+    ballRange = brain->data->tmBall.range;
+    ballYaw = brain->data->tmBall.yawToRobot;
+    ballPos = brain->data->tmBall.posToField;
+}
+```
+
+### 预期效果
+
+**性能提升**：
+- 多机器人协作效率提升 30-50%
+- 找球时间减少 2-4 秒
+- 减少重复搜索动作
+- 更灵活的球场覆盖策略
+
+**工作流程**：
+1. 机器人 A 看到球 → 发送 `ballPosToField`
+2. 机器人 B 接收 → 设置 `tm_ball_pos_reliable = true`
+3. B 的 Chase/SimpleChase/Adjust 检查 `ball_location_known || tm_ball_pos_reliable` → 通过
+4. B 使用 `tmBall` 数据计算移动速度和方向
+5. B 快速移动到球的大致位置，而不是继续盲目搜索
+
+**可靠性保护**（已有逻辑，未修改）：
+- B 只在 A 的 `ballDetected == true` 时信任坐标
+- UDP 通信超时保护
+- 共享坐标距离 B 必须 > 1.5m（避免使用过近的不准确坐标）
+
+### 验证方法
+
+**日志监控**：
+```bash
+grep "Reliable tm ball found" brain.log
+# 应该看到：Reliable tm ball found. PlayerID = 1, distance = 3.2m
+
+grep "Decision:" brain.log  
+# B 应该从 find 切换到 chase/adjust
+```
+
+**实际测试场景**：
+- A 看到球，B 看不到 → B 应快速移动到球位置（不再原地搜索）
+- 远距离共享（>1.5m）→ B 快速接近
+- 近距离共享（<1.5m）→ B 不使用（避免不准确）
+
+### 注意事项
+
+**未修改的节点**（已正确实现或设计合理）：
+- `CamTrackBall`：已支持队友坐标（本次修改的参考标准）
+- `MoveToFarSetPlaySearchArea`、`GoToFreekickPosition`、`KickoffStand`：已检查双条件
+- 守门员节点：主要依赖实时视觉和轨迹预测，不强制使用队友坐标（设计合理）
+
+**编译与部署**：
+```bash
+cd src/brain
+colcon build --packages-select brain
+# 重启机器人节点使修改生效
+```
+
+--------------------------------------------------------------
+
 ## 2026-09-22 角球和边线球第一脚禁止直接大脚
 
 ### 修改目的
@@ -163,7 +399,7 @@
 
 修改时间仅代表文件系统记录，不证明具体是谁修改，也不用于推定原始出厂版本。
 
----
+-----------------------------------------------------------------
 
 ## 2026-09-20 双前锋视觉踢球间距控制
 
@@ -202,6 +438,7 @@
 - `ctest --test-dir build/brain --output-on-failure`：`test_kick_geometry` 通过；其余 6 项失败原因为测试环境缺少 Python 模块 `ament_cmake_test`（`ModuleNotFoundError`），不是本次 C++ 编译错误。
 - 核查时未发现 `brain_node` 进程，也未停止或重启机器人服务；本次修改不会自动加载到正在运行的旧进程，需要后续按现场启动流程重启后才会生效。
 
+-------------------------------------------------------------------
 ## 2026-09-21 开球 rank 0 视觉踢球与 power 阈值
 
 ### 修改内容

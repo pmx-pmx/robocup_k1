@@ -615,8 +615,11 @@ NodeStatus DecideCheckBehind::tick()
 
 NodeStatus Chase::tick()
 {
+    bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
+    bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
+
     if (
-        !brain->tree->getEntry<bool>("ball_location_known")
+        !(iKnowBallPos || tmBallPosReliable)
         || brain->isBallOut(3.0, 1.5)
     )
     {
@@ -635,22 +638,35 @@ NodeStatus Chase::tick()
     brain->get_parameter("obstacle_avoidance.avoid_during_chase", avoidObstacle);
     brain->get_parameter("obstacle_avoidance.chase_ao_safe_dist", oaSafeDist);
 
+    // 使用队友共享坐标或本机坐标
+    double ballRange, ballYaw;
+    Point ballPos;
+    if (iKnowBallPos) {
+        ballRange = brain->data->ball.range;
+        ballYaw = brain->data->ball.yawToRobot;
+        ballPos = brain->data->ball.posToField;
+    } else {
+        ballRange = brain->data->tmBall.range;
+        ballYaw = brain->data->tmBall.yawToRobot;
+        ballPos = brain->data->tmBall.posToField;
+    }
+
     if (
         brain->config->limitNearBallSpeed
-        && brain->data->ball.range < brain->config->nearBallRange
+        && ballRange < brain->config->nearBallRange
     ) {
         vxLimit = min(brain->config->nearBallSpeedLimit, vxLimit);
     }
 
-    double ballRange = brain->data->ball.range;
-    double ballYaw = brain->data->ball.yawToRobot;
     double kickDir = brain->data->kickDir;
     double theta_br = atan2(
-        brain->data->robotPoseToField.y - brain->data->ball.posToField.y,
-        brain->data->robotPoseToField.x - brain->data->ball.posToField.x
+        brain->data->robotPoseToField.y - ballPos.y,
+        brain->data->robotPoseToField.x - ballPos.x
     );
-    double theta_rb = brain->data->robotBallAngleToField;
-    auto ballPos = brain->data->ball.posToField;
+    double theta_rb = atan2(
+        ballPos.y - brain->data->robotPoseToField.y,
+        ballPos.x - brain->data->robotPoseToField.x
+    );
 
     double vx, vy, vtheta;
     Pose2D target_f, target_r;
@@ -705,28 +721,46 @@ NodeStatus SimpleChase::tick()
     getInput("vx_limit", vxLimit);
     getInput("vy_limit", vyLimit);
 
-    if (!brain->tree->getEntry<bool>("ball_location_known"))
+    bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
+    bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
+
+    if (!(iKnowBallPos || tmBallPosReliable))
     {
         brain->client->setVelocity(0, 0, 0);
         return NodeStatus::SUCCESS;
     }
 
-    double vx = brain->data->ball.posToRobot.x;
-    double vy = brain->data->ball.posToRobot.y;
-    double vtheta = brain->data->ball.yawToRobot * 2.0; // 后面的乘数越大, 转身越快
+    // 使用队友共享坐标或本机坐标
+    double ballRange, ballYaw;
+    Pose2D ballPosToRobot;
+    if (iKnowBallPos) {
+        ballPosToRobot.x = brain->data->ball.posToRobot.x;
+        ballPosToRobot.y = brain->data->ball.posToRobot.y;
+        ballYaw = brain->data->ball.yawToRobot;
+        ballRange = brain->data->ball.range;
+    } else {
+        ballPosToRobot.x = brain->data->tmBall.posToRobot.x;
+        ballPosToRobot.y = brain->data->tmBall.posToRobot.y;
+        ballYaw = brain->data->tmBall.yawToRobot;
+        ballRange = brain->data->tmBall.range;
+    }
 
-    double linearFactor = 1 / (1 + exp(3 * (brain->data->ball.range * fabs(brain->data->ball.yawToRobot)) - 3)); // 距离远时, 优先转向
+    double vx = ballPosToRobot.x;
+    double vy = ballPosToRobot.y;
+    double vtheta = ballYaw * 2.0; // 后面的乘数越大, 转身越快
+
+    double linearFactor = 1 / (1 + exp(3 * (ballRange * fabs(ballYaw)) - 3)); // 距离远时, 优先转向
     vx *= linearFactor;
     vy *= linearFactor;
 
     vx = cap(vx, vxLimit, -0.1);     // 进一步限速
     vy = cap(vy, vyLimit, -vyLimit); // vy 进一步限速
 
-    if (brain->data->ball.range < stopDist)
+    if (ballRange < stopDist)
     {
         vx = 0;
         vy = 0;
-        // if (fabs(brain->data->ball.yawToRobot) < stopAngle) vtheta = 0; // uncomment 这一行, 会站住. 现在站不太稳, 就让它一直动着吧.
+        // if (fabs(ballYaw) < stopAngle) vtheta = 0; // uncomment 这一行, 会站住. 现在站不太稳, 就让它一直动着吧.
     }
 
     brain->client->setVelocity(vx, vy, vtheta, false, false, false);
@@ -1501,7 +1535,10 @@ NodeStatus KickoffStand::tick()
 
 NodeStatus Adjust::tick()
 {
-    if (!brain->tree->getEntry<bool>("ball_location_known"))
+    bool iKnowBallPos = brain->tree->getEntry<bool>("ball_location_known");
+    bool tmBallPosReliable = brain->tree->getEntry<bool>("tm_ball_pos_reliable");
+
+    if (!(iKnowBallPos || tmBallPosReliable))
     {
         return NodeStatus::SUCCESS;
     }
@@ -1523,14 +1560,30 @@ NodeStatus Adjust::tick()
     string position;
     getInput("position", position);
 
+    // 使用队友共享坐标或本机坐标
+    double ballRange, ballYaw;
+    Point ballPosToField;
+    if (iKnowBallPos) {
+        ballPosToField = brain->data->ball.posToField;
+        ballRange = brain->data->ball.range;
+        ballYaw = brain->data->ball.yawToRobot;
+    } else {
+        ballPosToField = brain->data->tmBall.posToField;
+        ballRange = brain->data->tmBall.range;
+        ballYaw = brain->data->tmBall.yawToRobot;
+    }
+
     double vx = 0, vy = 0, vtheta = 0;
     double kickDir = (position == "defense") ?
-        atan2(brain->data->ball.posToField.y, brain->data->ball.posToField.x + brain->config->fieldDimensions.length / 2)
+        atan2(ballPosToField.y, ballPosToField.x + brain->config->fieldDimensions.length / 2)
         : brain->data->kickDir;
-    double dir_rb_f = brain->data->robotBallAngleToField;
+
+    // 计算机器人到球的角度
+    double dir_rb_f = atan2(
+        ballPosToField.y - brain->data->robotPoseToField.y,
+        ballPosToField.x - brain->data->robotPoseToField.x
+    );
     double deltaDir = toPInPI(kickDir - dir_rb_f);
-    double ballRange = brain->data->ball.range;
-    double ballYaw = brain->data->ball.yawToRobot;
 
     double st = stFar;
     if (fabs(deltaDir) * ballRange < nearThreshold) {
@@ -2480,6 +2533,27 @@ NodeStatus RLVisionKick::onRunning()
         stepDecelerate();
         return NodeStatus::RUNNING;
     };
+
+    // Stop Play must interrupt visual-kick immediately, even if the behavior
+    // tree has not halted this node yet or the legacy protocol only updated
+    // the secondary STOP state in the current tick.
+    const bool gameControlStop =
+        brain->tree->getEntry<bool>("gc_play_stopped") ||
+        brain->tree->getEntry<string>("gc_game_state") != "PLAY";
+    if (gameControlStop) {
+        logExit("exit visual kick immediately: game controller stop");
+        brain->client->setVelocity(0.0, 0.0, 0.0, false, false, false);
+        if (_visionKickStarted) brain->client->robocupWalk();
+        clearState();
+        recordExitTime();
+        _isDecelerating = false;
+        _visionKickStarted = false;
+        _headCommandSent = false;
+        _lastHeadCommandTime = rclcpp::Time(0, 0, RCL_ROS_TIME);
+        _pendingRobocupWalk = false;
+        _pendingExitReason.clear();
+        return NodeStatus::SUCCESS;
+    }
 
     if (brain->data->nonDirectRestartFirstKickPending) {
         return beginExit("non-direct restart first-kick guard");

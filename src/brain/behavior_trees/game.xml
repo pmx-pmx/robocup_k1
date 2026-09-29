@@ -13,7 +13,10 @@
         <Sequence name="root">
             <RunOnce><RobocupWalk /></RunOnce>
             <RunOnce><Script code="control_state=3" /></RunOnce>
-            <ReactiveSequence _while="control_state==1 || assist_kick || go_manual || assist_chase" >
+            <ReactiveSequence _while="gc_play_stopped" name="Global Stop Play">
+                <SetVelocity />
+            </ReactiveSequence>
+            <ReactiveSequence _while="(control_state==1 || assist_kick || go_manual || assist_chase) &amp;&amp; !gc_play_stopped" >
                 <Speak text="manual" />
                 <!-- <SubTree ID="CamFindAndTrackBall" _autoremap="true" /> -->
                 <SimpleChase _while="assist_chase" vx_limit="2.5" vy_limit="0.8" stop_dist="0.0" stop_angle="0.3" />
@@ -23,7 +26,7 @@
                </Sequence>
             </ReactiveSequence>
 
-            <ReactiveSequence _while="control_state==2" name="需要 pickup 时， 先走到进场位置， 然后按下 LT + A, 重新校准定位, 等待数秒后, 按 LT + B 继续比赛">
+            <ReactiveSequence _while="control_state==2 &amp;&amp; !gc_play_stopped" name="需要 pickup 时， 先走到进场位置， 然后按下 LT + A, 重新校准定位, 等待数秒后, 按 LT + B 继续比赛">
                 <RunOnce><RobocupWalk /></RunOnce>
                 <Speak text="locate" />
                 <CamScanField _while="!odom_calibrated" />
@@ -32,7 +35,7 @@
 
             </ReactiveSequence>
 
-            <ReactiveSequence _while="control_state==3 &amp;&amp; (!go_manual)" name="包一层用于控制策略的开关, 3 为手柄 LT+B 的状态, 2 为 LT+A, 1 为 LT+X">
+            <ReactiveSequence _while="control_state==3 &amp;&amp; (!go_manual) &amp;&amp; !gc_play_stopped" name="包一层用于控制策略的开关, 3 为手柄 LT+B 的状态, 2 为 LT+A, 1 为 LT+X">
                 <Speak text="auto" />
                 <ReactiveSequence _while="gc_play_stopped" name="StopPlay 时无条件停止运动">
                     <SetVelocity />

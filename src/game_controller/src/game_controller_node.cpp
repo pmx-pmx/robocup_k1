@@ -181,7 +181,11 @@ void GameControllerNode::handle_packet(
     msg.packet_number = data.packetNumber;
     msg.players_per_team = data.playersPerTeam;
     msg.game_type = data.gameType;
-    msg.stopped = false;
+    // Legacy/version 12 has no standalone stopped field. Its STOP state is
+    // encoded as secondaryStateInfo[1] == 0 and must be exposed to Brain.
+    const auto legacy_sub_state =
+        static_cast<unsigned char>(data.secondaryStateInfo[1]);
+    msg.stopped = legacy_sub_state == 0;
     msg.game_phase = 0;
     msg.set_play = 0;
     msg.state = data.state;
