@@ -1,5 +1,80 @@
 # CHANGELOG
 
+## 2026-09-29 RLVisionKick 左右脚分别补偿
+
+### 问题描述
+
+机器人使用左脚和右脚踢球时，存在相反方向的系统性偏差：
+- **左脚踢球**（球在左侧，y > 0）：向右偏
+- **右脚踢球**（球在右侧，y < 0）：向左偏
+
+原先使用单一的 `kick_direction_offset` 参数无法同时修正两种情况。
+
+### 解决方案
+
+根据球相对于机器人的位置（y 坐标）判断使用哪只脚，并应用对应的补偿参数：
+- 球在左侧（`ball.y > 0`）→ 使用**左脚**踢球 → 应用 `kick_direction_offset_left`
+- 球在右侧（`ball.y < 0`）→ 使用**右脚**踢球 → 应用 `kick_direction_offset_right`
+
+### 修改内容
+
+**1. 配置文件** (`src/brain/config/config.yaml:158-163`)
+```yaml
+RLVisionKick:
+  kick_direction_offset_left: 0.1   # 左脚踢球补偿（球在左侧，y>0）
+  kick_direction_offset_right: -0.1 # 右脚踢球补偿（球在右侧，y<0）
+  # 正值 = 向左补偿（修正偏右）
+  # 负值 = 向右补偿（修正偏左）
+  # 单位：弧度（0.1 rad ≈ 5.7度）
+```
+
+**2. 参数声明** (`src/brain/src/brain.cpp:205-208`)
+```cpp
+declare_parameter<double>("RLVisionKick.kick_direction_offset_left", 0.0);
+declare_parameter<double>("RLVisionKick.kick_direction_offset_right", 0.0);
+```
+
+**3. 补偿应用逻辑** (`src/brain/src/brain.cpp:571-578`)
+```cpp
+// 根据球的位置判断使用左脚还是右脚，应用不同的补偿值
+double kickDirOffset = (ballRobot.y > 0)
+    ? get_parameter("RLVisionKick.kick_direction_offset_left").as_double()
+    : get_parameter("RLVisionKick.kick_direction_offset_right").as_double();
+
+kickMsg.dir = toPInPI((goalieVisualKick ? clearanceDir : data->kickDir)
+                     - data->robotPoseToField.theta + kickDirOffset);
+```
+
+### 调试方法
+
+#### 运行时动态调整
+```bash
+# 调整左脚踢球补偿（向左补偿 5 度）
+ros2 param set /brain_node RLVisionKick.kick_direction_offset_left 0.087
+
+# 调整右脚踢球补偿（向右补偿 5 度）
+ros2 param set /brain_node RLVisionKick.kick_direction_offset_right -0.087
+
+# 查看当前值
+ros2 param get /brain_node RLVisionKick.kick_direction_offset_left
+ros2 param get /brain_node RLVisionKick.kick_direction_offset_right
+```
+
+### 测试步骤
+
+1. **分别测试左右脚踢球**：
+   - 将球放在机器人左侧（y > 0），测试左脚踢球偏差
+   - 将球放在机器人右侧（y < 0），测试右脚踢球偏差
+
+2. **记录偏差角度**：
+   - 左脚偏右 8 度 → 设置 `kick_direction_offset_left: 0.14`（8° × π/180 ≈ 0.14 rad）
+   - 右脚偏左 6 度 → 设置 `kick_direction_offset_right: -0.10`（-6° × π/180 ≈ -0.10 rad）
+
+3. **验证效果**：
+   - 分别用左右脚各踢 10 次，检查是否修正偏差
+
+---
+
 ## 2026-09-29 RLVisionKick 踢球方向偏右修复
 
 ### 问题描述

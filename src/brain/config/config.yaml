@@ -159,7 +159,8 @@ brain_node:
       visual_kick_version: kV1 # kV1 | kV2 修改此参数可更改visualkick调用版本
       goalie_clearance_power: 2.5
       kickoff_power: 6.0 # 我方比赛开球时 rank 0 前锋的视觉踢球距离
-      kick_direction_offset: 0.1 # 踢球方向补偿，正值向左（修正偏右），负值向右（修正偏左），单位：弧度（0.1 rad ≈ 5.7度）
+      kick_direction_offset_left: 0.1   # 左脚踢球方向补偿（球在左侧，y>0），正值向左（修正偏右），单位：弧度（0.1 rad ≈ 5.7度）
+      kick_direction_offset_right: -0.1 # 右脚踢球方向补偿（球在右侧，y<0），负值向右（修正偏左），单位：弧度（-0.1 rad ≈ -5.7度）
 
     locator:
       min_marker_count: 4 #4

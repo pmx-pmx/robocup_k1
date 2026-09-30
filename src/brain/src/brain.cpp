@@ -204,7 +204,8 @@ Brain::Brain() : rclcpp::Node("brain_node")
 
     declare_parameter<double>("RLVisionKick.goalie_clearance_power", 2.5);
     declare_parameter<double>("RLVisionKick.kickoff_power", 6.0);
-    declare_parameter<double>("RLVisionKick.kick_direction_offset", 0.0);
+    declare_parameter<double>("RLVisionKick.kick_direction_offset_left", 0.0);
+    declare_parameter<double>("RLVisionKick.kick_direction_offset_right", 0.0);
 
     declare_parameter<int>("obstacle_avoidance.depth_sample_step", 16);
     declare_parameter<double>("obstacle_avoidance.obstacle_min_height", 0.15);
@@ -567,8 +568,11 @@ void Brain::pubKickMsg() {
     const double clearanceDir = kick_geometry::directionToOpponentGoal(
         ballField.x, ballField.y, goal_x);
 
-    // 获取踢球方向补偿参数（用于修正系统性偏差）
-    double kickDirOffset = get_parameter("RLVisionKick.kick_direction_offset").as_double();
+    // 获取踢球方向补偿参数（根据球的位置判断使用左脚还是右脚，应用不同的补偿值）
+    // 球在左侧（y > 0）使用左脚踢球，球在右侧（y < 0）使用右脚踢球
+    double kickDirOffset = (ballRobot.y > 0)
+        ? get_parameter("RLVisionKick.kick_direction_offset_left").as_double()
+        : get_parameter("RLVisionKick.kick_direction_offset_right").as_double();
 
     kickMsg.dir = toPInPI((goalieVisualKick ? clearanceDir : data->kickDir)
                          - data->robotPoseToField.theta + kickDirOffset);
