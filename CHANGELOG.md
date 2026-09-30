@@ -1,5 +1,126 @@
 # CHANGELOG
 
+## 2026-09-29 RLVisionKick 踢球方向偏右修复
+
+### 问题描述
+
+机器人进入 RLVisionKick 踢球模式后，实际踢球方向总是偏右，导致射门或传球偏离目标。
+
+### 根本原因
+
+可能的系统性偏差来源：
+1. **机械系统偏差**：机器人出脚动作、摆腿轨迹、接触点存在固定偏差
+2. **视觉检测偏差**：球位置检测有系统性误差
+3. **定位系统偏差**：机器人朝向（`robotPoseToField.theta`）存在累积误差
+
+### 修复方案
+
+增加可配置的踢球方向补偿参数，允许通过配置文件或运行时动态调整。
+
+### 修改内容
+
+**1. 配置文件** (`src/brain/config/config.yaml:162`)
+```yaml
+RLVisionKick:
+  kick_direction_offset: -0.1  # 踢球方向补偿
+  # 负值 = 向左补偿（修正偏右）
+  # 正值 = 向右补偿（修正偏左）
+  # 单位：弧度（-0.1 rad ≈ -5.7°）
+```
+
+**2. 参数声明** (`src/brain/src/brain.cpp:207`)
+```cpp
+declare_parameter<double>("RLVisionKick.kick_direction_offset", 0.0);
+```
+
+**3. 补偿应用** (`src/brain/src/brain.cpp:568-572`)
+```cpp
+// 获取踢球方向补偿参数（用于修正系统性偏差）
+double kickDirOffset = get_parameter("RLVisionKick.kick_direction_offset").as_double();
+
+kickMsg.dir = toPInPI((goalieVisualKick ? clearanceDir : data->kickDir)
+                     - data->robotPoseToField.theta + kickDirOffset);
+```
+
+### 调试方法
+
+#### 方法1：修改配置文件
+```yaml
+# 偏右 5 度 → 设置 -0.087 rad（-5°）
+kick_direction_offset: -0.087
+
+# 偏右 10 度 → 设置 -0.175 rad（-10°）
+kick_direction_offset: -0.175
+```
+
+#### 方法2：运行时动态调整
+```bash
+# 查看当前值
+ros2 param get /brain_node RLVisionKick.kick_direction_offset
+
+# 设置向左补偿 5 度
+ros2 param set /brain_node RLVisionKick.kick_direction_offset -0.087
+
+# 设置向左补偿 10 度
+ros2 param set /brain_node RLVisionKick.kick_direction_offset -0.175
+
+# 恢复无补偿
+ros2 param set /brain_node RLVisionKick.kick_direction_offset 0.0
+```
+
+### 测试步骤
+
+1. **记录原始偏差**：
+   - 让机器人正对球门踢球 10 次
+   - 测量平均偏差角度（假设偏右 8°）
+
+2. **计算补偿值**：
+   ```
+   偏差角度（度） → 弧度
+   8° × (π/180) = 0.1396 rad
+   补偿值 = -0.14 rad（向左）
+   ```
+
+3. **应用补偿**：
+   ```bash
+   ros2 param set /brain_node RLVisionKick.kick_direction_offset -0.14
+   ```
+
+4. **验证效果**：
+   - 再次踢球 10 次
+   - 检查是否修正偏差
+
+5. **微调**：
+   - 偏差减少但仍偏右 → 增大负值（如 -0.16）
+   - 过度补偿导致偏左 → 减小负值（如 -0.12）
+
+### 优点
+
+- ✅ 简单直接，不影响其他移动逻辑
+- ✅ 可运行时动态调整，无需重启
+- ✅ 适用于所有踢球场景（射门、传球、解围）
+- ✅ 易于现场快速调试
+- ✅ 可针对不同机器人设置不同补偿值
+
+### 注意事项
+
+1. **每个机器人可能需要不同的补偿值**（机械差异）
+2. **场地不同可能需要微调**（地面摩擦力、球的状态）
+3. **建议补偿值范围**：-0.3 ~ +0.3 rad（约 ±17°）
+4. **过大的补偿值可能表明其他问题**（机械故障、定位系统失效）
+
+### 角度参考表
+
+| 偏差角度（度） | 补偿值（弧度） | 配置值 |
+|--------------|-------------|--------|
+| 偏右 3° | -0.052 | `-0.05` |
+| 偏右 5° | -0.087 | `-0.09` |
+| 偏右 8° | -0.140 | `-0.14` |
+| 偏右 10° | -0.175 | `-0.18` |
+| 偏右 15° | -0.262 | `-0.26` |
+
+---
+
 ## 2026-09-29 修复 v12 协议 Stop Play 停止不生效问题
 
 ### 问题诊断
