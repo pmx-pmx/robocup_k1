@@ -1,6 +1,8 @@
 #include "brain_config.h"
 #include "utils/print.h"
+#include <algorithm>
 #include <cctype>
+#include <cmath>
 
 void BrainConfig::calcMapLines() {
     auto fd = fieldDimensions;
@@ -225,6 +227,24 @@ void BrainConfig::calcMapMarkings() {
 
 void BrainConfig::handle()
 {
+    constexpr double kPi = 3.14159265358979323846;
+    if (!std::isfinite(headYawLimitLeft) || !std::isfinite(headYawLimitRight) ||
+        headYawLimitLeft <= 0.0 || headYawLimitRight >= 0.0 ||
+        headYawLimitLeft > kPi || headYawLimitRight < -kPi ||
+        headYawLimitLeft <= headYawLimitRight) {
+        throw invalid_argument(
+            "[Error] vision.head_yaw_limit_left/right must satisfy "
+            "0 < left <= pi, -pi <= right < 0, and left > right");
+    }
+
+    if (!std::isfinite(headScanYawLeft) || !std::isfinite(headScanYawRight)) {
+        throw invalid_argument(
+            "[Error] vision.head_scan_yaw_left/right must be finite");
+    }
+
+    headScanYawLeft = std::clamp(headScanYawLeft, 0.0, headYawLimitLeft);
+    headScanYawRight = std::clamp(headScanYawRight, headYawLimitRight, 0.0);
+
     // playerStartPos[left, right]
     if (playerStartPos != "left" && playerStartPos != "right")
     {
@@ -334,6 +354,11 @@ void BrainConfig::print(ostream &os)
     os << "----------------------------------------" << endl;
     os << "Recovery:" << endl;
     os << "    getUpVersion = " << recoveryGetUpVersion << endl;
+    os << "Head:" << endl;
+    os << "    yawLimitLeft = " << headYawLimitLeft << endl;
+    os << "    yawLimitRight = " << headYawLimitRight << endl;
+    os << "    scanYawLeft = " << headScanYawLeft << endl;
+    os << "    scanYawRight = " << headScanYawRight << endl;
     os << "----------------------------------------" << endl;
     os << "RLVisionKick:" << endl;
     os << "    visualKickVersion = " << RLVisionKickVisualKickVersion << endl;

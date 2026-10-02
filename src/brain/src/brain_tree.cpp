@@ -193,6 +193,110 @@ bool teammateWinsVisualKickSpacing(Brain *brain,
          teammateId < brain->config->playerId);
 }
 
+struct GlobalCollisionAvoidanceSettings
+{
+    bool enabled = true;
+    double minDistance = 0.8;        // 硬性最小距离
+    double safeDistance = 1.2;       // 开始减速的安全距离
+    double stopDistance = 0.6;       // 紧急停止距离
+    double speedReductionFactor = 0.5; // 速度衰减系数
+    double teammateCommTimeoutMs = 1000.0; // 队友位置信息超时
+};
+
+GlobalCollisionAvoidanceSettings globalCollisionAvoidanceSettings(Brain *brain)
+{
+    GlobalCollisionAvoidanceSettings settings;
+    brain->get_parameter("strategy.global_collision_avoidance.enable", settings.enabled);
+    brain->get_parameter("strategy.global_collision_avoidance.min_distance", settings.minDistance);
+    brain->get_parameter("strategy.global_collision_avoidance.safe_distance", settings.safeDistance);
+    brain->get_parameter("strategy.global_collision_avoidance.stop_distance", settings.stopDistance);
+    brain->get_parameter("strategy.global_collision_avoidance.speed_reduction_factor", settings.speedReductionFactor);
+    brain->get_parameter("strategy.global_collision_avoidance.teammate_comm_timeout_ms", settings.teammateCommTimeoutMs);
+
+    settings.minDistance = std::clamp(settings.minDistance, 0.3, 2.0);
+    settings.safeDistance = std::clamp(settings.safeDistance, settings.minDistance + 0.1, 3.0);
+    settings.stopDistance = std::clamp(settings.stopDistance, 0.2, settings.minDistance - 0.1);
+    settings.speedReductionFactor = std::clamp(settings.speedReductionFactor, 0.1, 1.0);
+    settings.teammateCommTimeoutMs = std::clamp(settings.teammateCommTimeoutMs, 100.0, 5000.0);
+    return settings;
+}
+
+// 检查并调整速度以避免与队友碰撞
+// 返回值：speed_factor (0.0-1.0)，需要乘以原始速度
+double applyGlobalCollisionAvoidance(Brain *brain, double &vx, double &vy, double &vtheta)
+{
+    auto settings = globalCollisionAvoidanceSettings(brain);
+    if (!settings.enabled) return 1.0;
+
+    double minTeammateDistance = std::numeric_limits<double>::infinity();
+    Pose2D closestTeammateRobot;
+    bool hasCloseTeammate = false;
+
+    // 遍历所有队友
+    for (int i = 0; i < brain->config->numOfPlayers && i < HL_MAX_NUM_PLAYERS; ++i) {
+        if (i == brain->config->playerId - 1) continue; // 跳过自己
+
+        const auto &tm = brain->data->tmStatus[i];
+        if (!tm.isAlive) continue;
+        if (tm.timeLastCom.nanoseconds() <= 0) continue;
+
+        // 检查通信新鲜度
+        const double commAge = brain->msecsSince(tm.timeLastCom);
+        if (commAge < 0.0 || commAge > settings.teammateCommTimeoutMs) continue;
+
+        // 检查位置有效性
+        if (!std::isfinite(tm.robotPoseToField.x) || !std::isfinite(tm.robotPoseToField.y)) continue;
+
+        // 计算相对位置
+        Pose2D tmInRobot = brain->data->field2robot(tm.robotPoseToField);
+        double distance = std::hypot(tmInRobot.x, tmInRobot.y);
+
+        if (distance < minTeammateDistance) {
+            minTeammateDistance = distance;
+            closestTeammateRobot = tmInRobot;
+            hasCloseTeammate = true;
+        }
+    }
+
+    if (!hasCloseTeammate) return 1.0;
+
+    // 紧急停止距离：立即停止
+    if (minTeammateDistance < settings.stopDistance) {
+        vx = 0.0;
+        vy = 0.0;
+        vtheta = 0.0;
+        return 0.0;
+    }
+
+    // 最小距离：强制远离队友
+    if (minTeammateDistance < settings.minDistance) {
+        // 计算远离方向（与队友方向相反）
+        double awayDir = atan2(-closestTeammateRobot.y, -closestTeammateRobot.x);
+        double awaySpeed = 0.3; // 缓慢远离
+        vx = awaySpeed * cos(awayDir);
+        vy = awaySpeed * sin(awayDir);
+        // vtheta 保持不变，只改变移动方向
+        return 0.3;
+    }
+
+    // 安全距离：减速
+    if (minTeammateDistance < settings.safeDistance) {
+        // 线性插值计算速度衰减
+        double ratio = (minTeammateDistance - settings.minDistance) /
+                      (settings.safeDistance - settings.minDistance);
+        double speedFactor = settings.speedReductionFactor +
+                           (1.0 - settings.speedReductionFactor) * ratio;
+
+        vx *= speedFactor;
+        vy *= speedFactor;
+        vtheta *= speedFactor;
+
+        return speedFactor;
+    }
+
+    return 1.0; // 距离足够远，不需要调整
+}
+
 bool kickoffTacticalPhase(Brain *brain)
 {
     return (brain->data->isKickingOff || brain->data->isOpponentKickingOff) &&
@@ -521,8 +625,8 @@ CamFindBall::CamFindBall(const string &name, const NodeConfig &config, Brain *_b
 {
     double lowPitch = 1.0;
     double highPitch = 0.2;
-    double leftYaw = 1.1;
-    double rightYaw = -1.1;
+    const double leftYaw = brain->config->headScanYawLeft;
+    const double rightYaw = brain->config->headScanYawRight;
 
     _cmdSequence[0][0] = lowPitch;
     _cmdSequence[0][1] = leftYaw;
@@ -709,6 +813,9 @@ NodeStatus Chase::tick()
     vy = cap(vy, vyLimit, -vyLimit);
     vtheta = cap(vtheta, vthetaLimit, -vthetaLimit);
 
+    // 应用全局队友防碰撞
+    applyGlobalCollisionAvoidance(brain, vx, vy, vtheta);
+
     brain->client->setVelocity(vx, vy, vtheta);
     return NodeStatus::SUCCESS;
 }
@@ -762,6 +869,9 @@ NodeStatus SimpleChase::tick()
         vy = 0;
         // if (fabs(ballYaw) < stopAngle) vtheta = 0; // uncomment 这一行, 会站住. 现在站不太稳, 就让它一直动着吧.
     }
+
+    // 应用全局队友防碰撞
+    applyGlobalCollisionAvoidance(brain, vx, vy, vtheta);
 
     brain->client->setVelocity(vx, vy, vtheta, false, false, false);
     return NodeStatus::SUCCESS;
@@ -1610,6 +1720,9 @@ NodeStatus Adjust::tick()
     vx = cap(vx, vxLimit, -0.0);
     vy = cap(vy, vyLimit, -vyLimit);
     vtheta = cap(vtheta, vthetaLimit, -vthetaLimit);
+
+    // 应用全局队友防碰撞
+    applyGlobalCollisionAvoidance(brain, vx, vy, vtheta);
 
     brain->client->setVelocity(vx, vy, vtheta, false, true, false);
     return NodeStatus::SUCCESS;
@@ -2955,6 +3068,13 @@ void RobotFindBall::onHalted()
 
 NodeStatus CamFastScan::onStart()
 {
+    _cmdSequence[0][1] = brain->config->headScanYawLeft;
+    _cmdSequence[1][1] = 0.0;
+    _cmdSequence[2][1] = brain->config->headScanYawRight;
+    _cmdSequence[3][1] = brain->config->headScanYawRight;
+    _cmdSequence[4][1] = 0.0;
+    _cmdSequence[5][1] = brain->config->headScanYawLeft;
+    _cmdSequence[6][1] = 0.0;
     _cmdIndex = 0;
     _timeLastCmd = brain->get_clock()->now();
     brain->client->moveHead(_cmdSequence[_cmdIndex][0], _cmdSequence[_cmdIndex][1]);

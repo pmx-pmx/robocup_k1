@@ -1,5 +1,243 @@
 # CHANGELOG
 
+## 2026-09-29 全局队友防碰撞系统
+
+### 修改目的
+
+在原有的 `visual_kick_spacing`（仅限视觉踢球时的前锋间距控制）基础上，实现 **全局的队友防碰撞机制**，适用于所有移动场景。无论机器人处于何种状态（Chase、SimpleChase、Adjust 等），只要队友距离过近就会自动减速、停止或远离，防止机器人相互碰撞。
+
+### 原系统的局限性
+
+**旧的 `visual_kick_spacing` 只在特定场景生效：**
+- ✅ 一个前锋正在执行 RLVisionKick（视觉踢球）
+- ✅ 另一个前锋处于 Assist（接应）模式
+- ❌ 两个前锋同时 Chase（追球）时 **不生效**
+- ❌ 前锋和守门员接近时 **不生效**
+- ❌ 任意其他移动节点（SimpleChase、Adjust、GoToPosition 等）**不生效**
+
+### 修改内容
+
+#### 1. 配置文件（`config.yaml`）
+
+**新增全局防碰撞参数：**
+```yaml
+global_collision_avoidance:
+  enable: true                    # 全局队友防碰撞开关
+  min_distance: 0.8               # 硬性最小距离限制 (m)，队友距离 < 此值时强制远离
+  safe_distance: 1.2              # 安全距离 (m)，距离 < 此值时开始减速
+  stop_distance: 0.6              # 紧急停止距离 (m)，距离 < 此值时立即停止移动
+  speed_reduction_factor: 0.5     # 安全区内的速度衰减系数（0-1）
+  teammate_comm_timeout_ms: 1000.0 # 队友位置信息有效期 (ms)
+```
+
+#### 2. 参数声明（`brain.cpp`）
+
+在 `Brain` 构造函数中声明新参数（约 176-182 行）：
+```cpp
+declare_parameter<bool>("strategy.global_collision_avoidance.enable", true);
+declare_parameter<double>("strategy.global_collision_avoidance.min_distance", 0.8);
+declare_parameter<double>("strategy.global_collision_avoidance.safe_distance", 1.2);
+declare_parameter<double>("strategy.global_collision_avoidance.stop_distance", 0.6);
+declare_parameter<double>("strategy.global_collision_avoidance.speed_reduction_factor", 0.5);
+declare_parameter<double>("strategy.global_collision_avoidance.teammate_comm_timeout_ms", 1000.0);
+```
+
+#### 3. 核心防碰撞逻辑（`brain_tree.cpp`）
+
+**新增结构体和函数（约 195-305 行）：**
+```cpp
+struct GlobalCollisionAvoidanceSettings { ... };
+GlobalCollisionAvoidanceSettings globalCollisionAvoidanceSettings(Brain *brain);
+double applyGlobalCollisionAvoidance(Brain *brain, double &vx, double &vy, double &vtheta);
+```
+
+**应用到移动节点：**
+- `Chase::tick()`（约 817 行）
+- `SimpleChase::tick()`（约 876 行）
+- `Adjust::tick()`（约 1727 行）
+
+每个节点在计算完速度后、发送给底层之前，调用：
+```cpp
+applyGlobalCollisionAvoidance(brain, vx, vy, vtheta);
+```
+
+### 防碰撞逻辑详解
+
+#### 三层防护机制
+
+| 距离区间 | 触发条件 | 行为 | 速度系数 |
+|---------|---------|------|---------|
+| **紧急停止区** | < 0.6m | 立即停止所有移动（vx=0, vy=0, vtheta=0） | 0.0 |
+| **强制远离区** | 0.6m - 0.8m | 强制向远离队友方向移动（awaySpeed=0.3m/s） | 0.3 |
+| **安全减速区** | 0.8m - 1.2m | 线性减速（最低 50% 速度） | 0.5 - 1.0 |
+| **正常区域** | > 1.2m | 不干预，正常移动 | 1.0 |
+
+#### 工作流程
+
+1. **遍历所有队友**：检查每个队友的位置信息
+2. **筛选有效队友**：
+   - 必须是存活状态（`isAlive == true`）
+   - 通信延迟 < 1000ms（避免使用过期位置）
+   - 位置数据有效（`isfinite(x, y)`）
+3. **找到最近队友**：计算所有队友距离，找到最近的一个
+4. **分层响应**：
+   - **< 0.6m**：紧急停止
+   - **< 0.8m**：计算远离方向，强制向反方向移动
+   - **< 1.2m**：线性减速（距离越近速度越慢）
+   - **≥ 1.2m**：不干预
+
+#### 速度衰减公式（安全减速区）
+
+```cpp
+ratio = (distance - 0.8) / (1.2 - 0.8)  // 0.0 - 1.0
+speedFactor = 0.5 + (1.0 - 0.5) × ratio  // 0.5 - 1.0
+```
+
+**示例：**
+- 距离 0.8m：speedFactor = 0.5（最低速度）
+- 距离 1.0m：speedFactor = 0.75（75% 速度）
+- 距离 1.2m：speedFactor = 1.0（正常速度）
+
+### 与旧系统的对比
+
+| 特性 | visual_kick_spacing（旧） | global_collision_avoidance（新） |
+|-----|-------------------------|--------------------------------|
+| **适用场景** | 仅视觉踢球时的前锋协调 | 所有移动节点（Chase、SimpleChase、Adjust 等） |
+| **角色限制** | 仅前锋（striker） | 所有角色（前锋、守门员） |
+| **状态要求** | 主攻手必须在 RLVisionKick，接应者在 Assist | 无状态要求，任意移动都生效 |
+| **通信超时** | 500ms | 1000ms |
+| **最小距离** | 1.0m（stop_distance） | 0.8m（min_distance） |
+| **紧急停止** | 无 | 0.6m（stop_distance） |
+| **减速机制** | 固定速度限制（yield_speed） | 线性衰减（0.5-1.0） |
+| **相互关系** | 独立系统 | 独立系统，可同时启用 |
+
+### 预期效果
+
+**优点：**
+- ✅ 全场景覆盖：任意两个机器人接近时都会触发防碰撞
+- ✅ 多层防护：紧急停止、强制远离、渐进减速三层机制
+- ✅ 实时响应：每个控制周期（10ms）都检查队友距离
+- ✅ 自动恢复：距离恢复安全后自动恢复正常速度
+- ✅ 降低碰撞风险：特别是两个前锋同时追球、前锋和守门员接近等场景
+
+**注意事项：**
+- 依赖队友通信（UDP）的实时性和准确性
+- 通信延迟 > 1000ms 时，该队友不参与防碰撞计算
+- 定位误差可能导致误判，建议定位系统稳定后使用
+- 可能在某些场景下影响攻击效率（为安全牺牲部分速度）
+
+### 参数调优建议
+
+**如果碰撞仍然发生，可以调整：**
+- 增大 `safe_distance`：从 1.2m → 1.5m（更早开始减速）
+- 增大 `min_distance`：从 0.8m → 1.0m（更大的强制远离范围）
+- 降低 `speed_reduction_factor`：从 0.5 → 0.3（减速更激进）
+
+**如果影响攻击效率，可以调整：**
+- 减小 `safe_distance`：从 1.2m → 1.0m（减速范围更小）
+- 增大 `speed_reduction_factor`：从 0.5 → 0.7（减速不那么激进）
+- 关闭某些节点的防碰撞（需要代码修改）
+
+**完全禁用：**
+```yaml
+global_collision_avoidance:
+  enable: false  # 关闭全局防碰撞
+```
+
+### 测试建议
+
+1. **两个前锋同时追球**：观察是否在接近时减速/停止
+2. **前锋接近守门员**：观察是否触发防碰撞
+3. **通信延迟测试**：模拟高延迟环境，观察系统是否忽略过期位置
+4. **定位误差测试**：观察定位漂移时是否误触发
+
+---
+
+## 2026-09-29 提高距离成本权重优化队长选择
+
+### 修改目的
+
+在团队协作中，距离球最近的机器人应该有更高的优先级成为队长（球权所有者）。通过提高距离成本的权重系数，使距离因素在 cost 计算中占据更重要的地位，减少因角度、对准等次要因素导致的远距离机器人抢球现象。
+
+### 修改内容
+
+**文件：`src/brain/src/brain.cpp`（约第 1511-1516 行）**
+
+**修改前：**
+```cpp
+if (ballLocationKnown) {
+    cost += data->ball.range;
+    log_(format("ball range cost: %.1f", data->ball.range));
+```
+
+**修改后：**
+```cpp
+if (ballLocationKnown) {
+    constexpr double RANGE_WEIGHT = 1.5;
+    const double rangeCost = data->ball.range * RANGE_WEIGHT;
+    cost += rangeCost;
+    log_(format("ball range cost: %.1f (range: %.1f, weight: %.1f)", rangeCost, data->ball.range, RANGE_WEIGHT));
+```
+
+### 参数说明
+
+- **`RANGE_WEIGHT = 1.5`**：距离成本权重系数
+- 原始比例：1 米距离 = 1.0 成本
+- 修改后比例：1 米距离 = 1.5 成本
+- 距离优势提升：**+50%**
+
+### 实际效果对比
+
+| 距离差异 | 修改前成本差 | 修改后成本差 | 优势提升 |
+|---------|-------------|-------------|---------|
+| 0.5米更近 | -0.5 | **-0.75** | +50% |
+| 1.0米更近 | -1.0 | **-1.5** | +50% |
+| 2.0米更近 | -2.0 | **-3.0** | +50% |
+
+### 典型场景示例
+
+**场景 1：距离 vs 角度权衡**
+- **机器人 A**：距离球 1.0m，角度偏差 0.5rad
+  - 修改前 cost ≈ 1.0 + 0.5 = **1.5**
+  - 修改后 cost ≈ 1.5 + 0.5 = **2.0**
+- **机器人 B**：距离球 2.0m，角度偏差 0.1rad
+  - 修改前 cost ≈ 2.0 + 0.1 = **2.1**
+  - 修改后 cost ≈ 3.0 + 0.1 = **3.1**
+- **结果**：A 的距离优势从 0.6 提升到 1.1，更明确地成为队长
+
+**场景 2：距离 vs 对准误差权衡**
+- **机器人 A**：距离球 1.5m，对准误差 0.2rad（cost ≈ 0.27）
+  - 修改前 cost ≈ 1.5 + 0.27 = **1.77**
+  - 修改后 cost ≈ 2.25 + 0.27 = **2.52**
+- **机器人 B**：距离球 2.5m，对准误差 0.05rad（cost ≈ 0.07）
+  - 修改前 cost ≈ 2.5 + 0.07 = **2.57**
+  - 修改后 cost ≈ 3.75 + 0.07 = **3.82**
+- **结果**：A 的优势从 0.8 提升到 1.3，距离更近的机器人更容易获得球权
+
+### 预期效果
+
+**优点：**
+- ✅ 距离球最近的机器人获得更高优先级
+- ✅ 减少远距离机器人因朝向好而抢球的情况
+- ✅ 减少不必要的长距离追球和团队冲突
+- ✅ 提高团队整体效率，缩短到达球位置的时间
+
+**注意事项：**
+- 角度、对准误差等因素仍然有效，只是相对权重降低
+- 极端情况（跌倒 +15.0、定位失效 +100.0）仍然是硬排除
+- 如果 1.5 倍权重效果不够明显，可以进一步调整到 2.0 或 2.5
+
+### 调试建议
+
+如果需要更强的距离优先级，可以调整 `RANGE_WEIGHT` 值：
+- **`RANGE_WEIGHT = 2.0`**：距离优势翻倍（推荐用于强调距离优先的策略）
+- **`RANGE_WEIGHT = 2.5`**：距离优势更强（可能导致角度、对准因素被过度忽略）
+- **`RANGE_WEIGHT = 1.0`**：恢复原始行为（距离和角度权重相当）
+
+建议先用 1.5 测试效果，根据实际比赛表现再调整。
+
+---
+
 ## 2026-09-29 RLVisionKick 左右脚分别补偿
 
 ### 问题描述

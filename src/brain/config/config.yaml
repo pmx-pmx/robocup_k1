@@ -2,9 +2,9 @@ brain_node:
   ros__parameters:
     game:
       team_id: 152 # consistant with GameControl
-      player_id: 2 # 1 | 2 | 3 | 4 | 5
+      player_id: 1 # 1 | 2 | 3 | 4 | 5
       field_type: "adult_size" # adult_size | kid_size | robo_league
-      player_role: "striker" # striker | goal_keeper
+      player_role: "goal_keeper" # striker | goal_keeper
       player_start_pos: "right" # right | left
       treat_person_as_robot: false # 是否将人类视为机器人, 用于调试. !!!! 正式比赛时, 必须设置为 false !!!!
       number_of_players: 3
@@ -92,7 +92,7 @@ brain_node:
         allow_memory_kick_msg: true
         kick_msg_real_ball_max_age_ms: 650.0
         no_detection_kick_msg_reject_range: 0.45
-        startup_decelerate_ms: 80.0
+        startup_decelerate_ms: 40.0 #80.0
         exit_decelerate_ms: 140.0
         max_parallel_count: 1
         yield_my_cost_min: 4.0
@@ -103,12 +103,19 @@ brain_node:
         max_extra_rounds: 1
       visual_kick_spacing:
         enable: true             # 视觉踢球时，另一名前锋执行让位和距离保持
-        target_distance: 2.2     # 接应位到视觉踢球主攻手的目标距离 (m)
-        yield_distance: 1.8      # 小于此距离时，接应前锋主动远离主攻手 (m)
+        target_distance: 1.5     # 接应位到视觉踢球主攻手的目标距离 (m)
+        yield_distance: 1.5      # 小于此距离时，接应前锋主动远离主攻手 (m)
         release_distance: 2.0    # 达到此距离后解除强制让位速度 (m)
-        stop_distance: 1.5       # 小于此距离时禁止继续向主攻手靠近 (m)
+        stop_distance: 1.0       # 小于此距离时禁止继续向主攻手靠近 (m)
         peer_fresh_ms: 500.0     # 队友视觉踢球状态允许的最大通信延迟 (ms)
-        yield_speed: 0.5         # 让位/接应移动速度上限 (m/s)
+        yield_speed: 1.0         # 让位/接应移动速度上限 (m/s)
+      global_collision_avoidance:
+        enable: true                    # 全局队友防碰撞开关
+        min_distance: 0.6               # 硬性最小距离限制 (m)，任意队友距离 < 此值时强制远离
+        safe_distance: 1.2              # 安全距离 (m)，距离 < 此值时开始减速
+        stop_distance: 0.4              # 紧急停止距离 (m)，距离 < 此值时立即停止移动
+        speed_reduction_factor: 0.5     # 安全区内的速度衰减系数（0-1）
+        teammate_comm_timeout_ms: 1000.0 # 队友位置信息有效期 (ms)
       cooperation:
         enable_role_switch: false 
         ball_control_cost_threshold: 5.0 
@@ -156,11 +163,11 @@ brain_node:
       always_turn_left: false  #false 
 
     RLVisionKick:
-      visual_kick_version: kV1 # kV1 | kV2 修改此参数可更改visualkick调用版本
-      goalie_clearance_power: 2.5
+      visual_kick_version: kV2 # kV1 | kV2 修改此参数可更改visualkick调用版本
+      goalie_clearance_power: 5.0
       kickoff_power: 6.0 # 我方比赛开球时 rank 0 前锋的视觉踢球距离
-      kick_direction_offset_left: 0.1   # 左脚踢球方向补偿（球在左侧，y>0），正值向左（修正偏右），单位：弧度（0.1 rad ≈ 5.7度）
-      kick_direction_offset_right: -0.1 # 右脚踢球方向补偿（球在右侧，y<0），负值向右（修正偏左），单位：弧度（-0.1 rad ≈ -5.7度）
+      kick_direction_offset_left: 0.3   # 左脚踢球方向补偿（球在左侧，y>0），正值向左（修正偏右），单位：弧度（0.1 rad ≈ 5.7度）
+      kick_direction_offset_right: -0.3 # 右脚踢球方向补偿（球在右侧，y<0），负值向右（修正偏左），单位：弧度（-0.1 rad ≈ -5.7度）
 
     locator:
       min_marker_count: 4 #4
@@ -193,6 +200,13 @@ brain_node:
 
       cam_fov_x: 69.4 # 相机视场角, 单位: 度, d-robotics,debug
       cam_fov_y: 42.5 # 相机视场角, 单位: 度, d-robotics,debug  
+      # Unit: rad. The current software limit is +/-1.1 rad (+/-63.0 deg).
+      # Increase only after verifying the physical gimbal limit on the robot.
+      head_yaw_limit_left: 1.3
+      head_yaw_limit_right: -1.3
+      # Search endpoints are bounded by the yaw limits during startup.
+      head_scan_yaw_left: 1.3
+      head_scan_yaw_right: -1.3
 
     debug:
       log_ball_pos: false # 是否记录球位置到 ballpos.log 中, 用于调试
@@ -207,7 +221,7 @@ brain_node:
         field_ascii_char_aspect: 2.0 # 终端字符高宽比修正
         field_ascii_width: 45 # ASCII 场地图内部宽度
     
-    game_control_ip: "192.168.50.127"  # 更改为具体的裁判机的 IP 地址
+    game_control_ip: "192.168.50.12"  # 更改为具体的裁判机的 IP 地址
 
     # for fun
     sound:

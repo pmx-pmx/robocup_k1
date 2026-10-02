@@ -173,6 +173,12 @@ Brain::Brain() : rclcpp::Node("brain_node")
     declare_parameter<double>("strategy.visual_kick_spacing.stop_distance", 1.5);
     declare_parameter<double>("strategy.visual_kick_spacing.peer_fresh_ms", 500.0);
     declare_parameter<double>("strategy.visual_kick_spacing.yield_speed", 0.5);
+    declare_parameter<bool>("strategy.global_collision_avoidance.enable", true);
+    declare_parameter<double>("strategy.global_collision_avoidance.min_distance", 0.8);
+    declare_parameter<double>("strategy.global_collision_avoidance.safe_distance", 1.2);
+    declare_parameter<double>("strategy.global_collision_avoidance.stop_distance", 0.6);
+    declare_parameter<double>("strategy.global_collision_avoidance.speed_reduction_factor", 0.5);
+    declare_parameter<double>("strategy.global_collision_avoidance.teammate_comm_timeout_ms", 1000.0);
     declare_parameter<bool>("strategy.power_shoot.enable", false);
     declare_parameter<bool>("strategy.power_shoot.use_for_kickoff", false);
     declare_parameter<double>("strategy.power_shoot.xmin", 0.5);
@@ -263,6 +269,10 @@ Brain::Brain() : rclcpp::Node("brain_node")
     declare_parameter<double>("vision.cam_pixel_height", 720);
     declare_parameter<double>("vision.cam_fov_x", 90);
     declare_parameter<double>("vision.cam_fov_y", 65);
+    declare_parameter<double>("vision.head_yaw_limit_left", 1.1);
+    declare_parameter<double>("vision.head_yaw_limit_right", -1.1);
+    declare_parameter<double>("vision.head_scan_yaw_left", 1.1);
+    declare_parameter<double>("vision.head_scan_yaw_right", -1.1);
 
     declare_parameter<string>("game_control_ip", "0.0.0.0");
 
@@ -409,6 +419,10 @@ void Brain::loadConfig()
     get_parameter("vision.cam_fov_y", camDegY);
     config->camAngleX = deg2rad(camDegX);
     config->camAngleY = deg2rad(camDegY);
+    get_parameter("vision.head_yaw_limit_left", config->headYawLimitLeft);
+    get_parameter("vision.head_yaw_limit_right", config->headYawLimitRight);
+    get_parameter("vision.head_scan_yaw_left", config->headScanYawLeft);
+    get_parameter("vision.head_scan_yaw_right", config->headScanYawRight);
 
     // 从视觉 config 中加载相关参数
     string visionConfigPath, visionConfigLocalPath;
@@ -1501,8 +1515,10 @@ void Brain::updateCostToKick() {
     // Ball-dependent terms are meaningful only after a local or teammate ball
     // position has been validated. Unknown data must not influence strategy.
     if (ballLocationKnown) {
-        cost += data->ball.range;
-        log_(format("ball range cost: %.1f", data->ball.range));
+        constexpr double RANGE_WEIGHT = 1.5;
+        const double rangeCost = data->ball.range * RANGE_WEIGHT;
+        cost += rangeCost;
+        log_(format("ball range cost: %.1f (range: %.1f, weight: %.1f)", rangeCost, data->ball.range, RANGE_WEIGHT));
 
         if (distToObstacle(data->ball.yawToRobot) < 1.5) {
             constexpr double OBSTACLE_COST = 0.5;

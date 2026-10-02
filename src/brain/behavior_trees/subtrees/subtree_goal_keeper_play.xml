@@ -25,7 +25,7 @@
                <CalcKickDir />
                <Sequence>
                   <ReactiveSequence _while="goalie_mode == 'block_kick' || goalie_mode == 'intercept_kick'">
-                     <RLVisionKick min_msec_kick="1500" max_msec_kick="7000" range="4.0" />
+                     <RLVisionKick min_msec_kick="800" max_msec_kick="7000" range="4.0" />
                   </ReactiveSequence>
                   <ReactiveSequence _while="goalie_mode == 'guard_idle'">
                      <GoalieIdleHome dist_to_goalline="1.0" vx_limit="0.7" vy_limit="0.5"

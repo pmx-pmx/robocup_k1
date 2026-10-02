@@ -83,6 +83,8 @@ public:
     // 头转动软限位
     double headYawLimitLeft = 1.1;
     double headYawLimitRight = -1.1;
+    double headScanYawLeft = 1.1;
+    double headScanYawRight = -1.1;
     double headPitchLimitUp = 0.2; // 这个角度足以看到全场, 更高更远的信息全是干扰，k1 realsense 0.3 to 0.2
 
     // 速度上限
