@@ -39,6 +39,9 @@ ament_export_dependencies(rosidl_default_runtime)
 
 # source files
 file(GLOB SOURCE_FILES src/*.cpp)
+# Keep the state logger implementation in the brain executable.  The header is
+# included by brain.cpp, but its non-inline methods must also be linked.
+set(SOURCE_FILES ${SOURCE_FILES} src/state_logger.cpp)
 add_executable(brain_node ${SOURCE_FILES})
 
 # otherwise connot find msg in same pkg 

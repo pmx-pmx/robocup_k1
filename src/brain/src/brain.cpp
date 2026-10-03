@@ -305,7 +305,13 @@ void Brain::init()
     client = std::make_shared<RobotClient>(this);
     communication = std::make_shared<BrainCommunication>(this);
 
-    
+    // 初始化状态日志器
+    std::string stateLogPath = "/tmp/state.log";
+    stateLogger = std::make_unique<StateLogger>(stateLogPath);
+    stateLogger->start();
+    RCLCPP_INFO(get_logger(), "State logger started: %s", stateLogPath.c_str());
+
+
     locator->init(config->fieldDimensions, config->pfMinMarkerCnt, config->pfMaxResidual);
 
    
@@ -488,6 +494,7 @@ void Brain::tick()
     updateMemory();
     handleSpecialStates();
     handleCooperation();
+    updateStateLogger();
 
     tree->tick();
     // 行为树先写入守门员拦截目标，本帧立即发布给运控。
@@ -1095,6 +1102,131 @@ void Brain::handleCooperation() {
     return;
 }
 
+void Brain::updateStateLogger()
+{
+    if (!stateLogger) return;
+
+    TeamStateSnapshot snapshot;
+
+    // 获取比赛状态
+    snapshot.primaryState = tree->getEntry<string>("gc_game_state");
+    snapshot.secondaryState = tree->getEntry<string>("gc_game_sub_type");
+    snapshot.ownScore = data->score;
+    snapshot.opponentScore = data->oppoScore;
+
+    // 收集自己的状态
+    RobotState selfState;
+    selfState.playerId = config->playerId;
+    selfState.isSelf = true;
+    selfState.isAlive = data->tmImAlive;
+    selfState.cost = data->tmMyCost;
+    selfState.isLeader = data->tmImLead;
+    selfState.inVisualKick = data->tmImInVisualKick;
+    selfState.currentBehavior = tree->getEntry<string>("decision");
+    selfState.role = tree->getEntry<string>("player_role");  // 获取角色
+
+    // 位置和速度
+    selfState.posX = data->robotPoseToField.x;
+    selfState.posY = data->robotPoseToField.y;
+    selfState.posTheta = data->robotPoseToField.theta;
+    // 速度信息（暂时设为0，因为没有直接存储上次发送的速度命令）
+    // Recently sent velocity command, not measured odometry feedback.
+    selfState.velX = client ? client->getLastVx() : 0.0;
+    selfState.velY = client ? client->getLastVy() : 0.0;
+    selfState.velTheta = client ? client->getLastVtheta() : 0.0;
+
+    // 球的信息
+    selfState.ballDetected = data->ballDetected;
+    if (data->ballDetected) {
+        selfState.ballRange = data->ball.range;
+        selfState.ballYaw = data->ball.yawToRobot;
+        selfState.ballPosX = data->ball.posToField.x;
+        selfState.ballPosY = data->ball.posToField.y;
+    }
+
+    // 碰撞避让状态（需要检查最近队友距离）
+    selfState.collisionAvoidanceActive = false;
+    selfState.closestTeammateDistance = 999.0;
+
+    for (int i = 0; i < config->numOfPlayers && i < HL_MAX_NUM_PLAYERS; ++i) {
+        if (i == config->playerId - 1) continue;
+        const auto &tm = data->tmStatus[i];
+        if (!tm.isAlive) continue;
+        if (!std::isfinite(tm.robotPoseToField.x) || !std::isfinite(tm.robotPoseToField.y)) continue;
+
+        Pose2D tmInRobot = data->field2robot(tm.robotPoseToField);
+        double distance = std::hypot(tmInRobot.x, tmInRobot.y);
+        if (distance < selfState.closestTeammateDistance) {
+            selfState.closestTeammateDistance = distance;
+        }
+    }
+
+    // 检查是否在安全距离内
+    if (selfState.closestTeammateDistance < 1.2) {
+        selfState.collisionAvoidanceActive = true;
+        if (selfState.closestTeammateDistance < 0.8) {
+            selfState.avoidanceSpeedFactor = 0.5;
+        } else {
+            double ratio = (selfState.closestTeammateDistance - 0.8) / (1.2 - 0.8);
+            selfState.avoidanceSpeedFactor = 0.5 + (1.0 - 0.5) * ratio;
+        }
+    }
+
+    snapshot.robots.push_back(selfState);
+
+    // 收集队友的状态
+    for (int i = 0; i < config->numOfPlayers && i < HL_MAX_NUM_PLAYERS; ++i) {
+        if (i == config->playerId - 1) continue; // 跳过自己
+
+        const auto &tm = data->tmStatus[i];
+        if (!tm.isAlive) continue;
+
+        RobotState teammateState;
+        teammateState.playerId = i + 1;
+        teammateState.isSelf = false;
+        teammateState.isAlive = tm.isAlive;
+        teammateState.cost = tm.cost;
+        teammateState.isLeader = tm.isLead;
+        teammateState.inVisualKick = tm.isInVisualKick;
+        teammateState.currentBehavior = "N/A"; // 队友的行为状态未通信
+        teammateState.role = tm.role; // 获取队友角色
+
+        // 位置（场地坐标系）
+        teammateState.posX = tm.robotPoseToField.x;
+        teammateState.posY = tm.robotPoseToField.y;
+        teammateState.posTheta = tm.robotPoseToField.theta;
+        teammateState.velX = 0.0; // 队友速度未通信
+        teammateState.velY = 0.0;
+        teammateState.velTheta = 0.0;
+
+        // 球的信息（队友视角）
+        teammateState.ballDetected = tm.ballDetected;
+        if (tm.ballDetected) {
+            Pose2D tmRobotPose = tm.robotPoseToField;
+            Point ballField = tm.ballPosToField;
+            teammateState.ballRange = std::hypot(
+                ballField.x - tmRobotPose.x,
+                ballField.y - tmRobotPose.y
+            );
+            teammateState.ballYaw = std::atan2(
+                ballField.y - tmRobotPose.y,
+                ballField.x - tmRobotPose.x
+            ) - tmRobotPose.theta;
+            teammateState.ballPosX = ballField.x;
+            teammateState.ballPosY = ballField.y;
+        }
+
+        // 碰撞避让状态（队友视角）
+        teammateState.collisionAvoidanceActive = false;
+        teammateState.closestTeammateDistance = 999.0;
+
+        snapshot.robots.push_back(teammateState);
+    }
+
+    // 更新状态日志
+    stateLogger->updateState(snapshot);
+}
+
 void Brain::updateMemory()
 {
     updateBallMemory();
@@ -1515,7 +1647,7 @@ void Brain::updateCostToKick() {
     // Ball-dependent terms are meaningful only after a local or teammate ball
     // position has been validated. Unknown data must not influence strategy.
     if (ballLocationKnown) {
-        constexpr double RANGE_WEIGHT = 1.5;
+        constexpr double RANGE_WEIGHT = 2.0;
         const double rangeCost = data->ball.range * RANGE_WEIGHT;
         cost += rangeCost;
         log_(format("ball range cost: %.1f (range: %.1f, weight: %.1f)", rangeCost, data->ball.range, RANGE_WEIGHT));

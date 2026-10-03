@@ -1,5 +1,278 @@
 # CHANGELOG
 
+## 2026-09-29 实时状态日志系统（State Logger）
+
+### 修改目的
+
+实现类似 `tail -f` 的实时状态监控系统，能够清晰地显示所有队友的关键状态信息，方便调试和监控比赛过程。支持多机器人协作时的状态可视化，排版整齐，数据类型清晰可辨。
+
+### 功能特性
+
+**监控信息包括：**
+- ✅ Player ID（机器人编号）
+- ✅ Role（角色：striker 或 goal_keeper）
+- ✅ Cost 值（队长选举成本）
+- ✅ 是否为 Leader（队长状态）
+- ✅ 是否进入 RLVisionKick 模式
+- ✅ 当前行为 State（decision）
+- ✅ 自身的 Odometry（场地坐标系位置）
+- ✅ 比赛一级、二级状态
+- ✅ 是否识别到足球
+- ✅ 当前机器人速度（vx, vy, vtheta）
+- ✅ 在每个机器人视角里球的位置
+- ✅ 是否触发碰撞避让（collision avoidance）
+- ✅ 所有队友的上述信息
+
+**输出特点：**
+- 📊 使用表格框架清晰分隔各个机器人
+- 🎯 自己的状态突出显示（标记为 SELF）
+- 👥 队友状态依次列出（标记为 TEAMMATE）
+- ⚠️  碰撞避让状态用图标高亮
+- 🔄 10Hz 更新频率（100ms/次）
+- 📝 输出到 `/tmp/state.log` 文件
+
+### 修改内容
+
+#### 1. 新增文件
+
+**状态日志器头文件（`include/state_logger.h`）：**
+```cpp
+// 机器人状态结构体
+struct RobotState {
+    int playerId;
+    bool isSelf;
+    bool isAlive;
+    double cost;
+    bool isLeader;
+    bool inVisualKick;
+    std::string currentBehavior;
+    double posX, posY, posTheta;
+    double velX, velY, velTheta;
+    bool ballDetected;
+    double ballRange, ballYaw;
+    double ballPosX, ballPosY;
+    bool collisionAvoidanceActive;
+    double avoidanceSpeedFactor;
+    double closestTeammateDistance;
+};
+
+// 团队状态快照
+struct TeamStateSnapshot {
+    std::string timestamp;
+    std::string primaryState;
+    std::string secondaryState;
+    int ownScore, opponentScore;
+    std::vector<RobotState> robots;
+};
+
+// 状态日志器类
+class StateLogger {
+    void start();
+    void stop();
+    void updateState(const TeamStateSnapshot& snapshot);
+};
+```
+
+**状态日志器实现（`src/state_logger.cpp`）：**
+- 独立线程运行，100ms 更新一次
+- 格式化输出：表格框架 + Unicode 字符美化
+- 时间戳、比赛状态、机器人状态分层显示
+
+**查看脚本（`scripts/view_state_log.sh`）：**
+```bash
+#!/bin/bash
+tail -f /tmp/state.log | while read line; do
+    if [[ "$line" == "=="* ]]; then
+        clear
+    fi
+    echo "$line"
+done
+```
+
+#### 2. 修改的文件
+
+**`brain.h`：**
+- 添加 `#include "state_logger.h"`
+- 添加成员变量 `std::unique_ptr<StateLogger> stateLogger;`
+- 添加私有方法 `void updateStateLogger();`
+
+**`brain.cpp`：**
+
+**初始化（`Brain::init()`）：**
+```cpp
+// 初始化状态日志器
+std::string stateLogPath = "/tmp/state.log";
+stateLogger = std::make_unique<StateLogger>(stateLogPath);
+stateLogger->start();
+RCLCPP_INFO(get_logger(), "State logger started: %s", stateLogPath.c_str());
+```
+
+**主循环更新（`Brain::tick()`）：**
+```cpp
+updateMemory();
+handleSpecialStates();
+handleCooperation();
+updateStateLogger();  // 新增：每个 tick 更新状态日志
+```
+
+**状态采集实现（`Brain::updateStateLogger()`）：**
+- 采集比赛状态（primary/secondary state, score）
+- 采集自己的完整状态（cost, leader, position, velocity, ball, collision）
+- 采集所有队友的状态（遍历 `data->tmStatus[]`）
+- 计算碰撞避让状态（检查最近队友距离）
+- 调用 `stateLogger->updateState()` 更新日志
+
+### 输出格式示例
+
+```
+================================================================================
+12:34:56.789 | TEAM STATE MONITOR
+================================================================================
+┌─ GAME STATE ─────────────────────────────────────────────────────┐
+│ Primary:   PLAY                 │ Secondary: NORMAL              │
+│ Score:     0 - 0                                                │
+└──────────────────────────────────────────────────────────────────┘
+┌─ ROBOT #2 (SELF) ────────────────────────────────────────────────┐
+│ Role: striker    │ Cost:   2.35 │ Leader: YES │ VisionKick: NO  │
+│ State: chase        │ Pos: ( 1.20,  0.35,  0.12)                │
+│ Vel: ( 0.80,  0.10,  0.05)                                      │
+│ Ball: DETECTED │ Range:  1.50m │ Yaw:  0.15rad │ Pos: ( 2.10,  0.50) │
+│ Collision Avoidance: INACTIVE                                    │
+├─ ROBOT #1 (TEAMMATE) ─────────────────────────────────────────────┤
+│ Role: striker    │ Cost:   3.20 │ Leader: NO  │ VisionKick: NO  │
+│ State: N/A          │ Pos: ( 0.50, -1.20,  0.05)                │
+│ Vel: ( 0.00,  0.00,  0.00)                                      │
+│ Ball: DETECTED │ Range:  2.80m │ Yaw:  0.25rad │ Pos: ( 2.00,  0.40) │
+│ Collision Avoidance: INACTIVE                                    │
+├─ ROBOT #3 (TEAMMATE) ─────────────────────────────────────────────┤
+│ Role: goal_keeper│ Cost:   5.10 │ Leader: NO  │ VisionKick: YES │
+│ State: N/A          │ Pos: (-2.50,  0.00, -0.10)                │
+│ Vel: ( 0.00,  0.00,  0.00)                                      │
+│ Ball: NOT DETECTED                                               │
+│ ⚠️  COLLISION AVOIDANCE ACTIVE │ Factor:  0.7 │ Closest:  0.95m   │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### 使用方法
+
+#### 1. 编译代码
+```bash
+cd src/brain
+colcon build --packages-select brain
+```
+
+#### 2. 启动机器人节点
+```bash
+ros2 run brain brain_node
+```
+
+#### 3. 实时查看状态日志
+```bash
+# 方法1：使用便捷脚本（推荐）
+bash scripts/view_state_log.sh
+
+# 方法2：直接使用 tail
+tail -f /tmp/state.log
+
+# 方法3：清屏循环查看
+watch -n 0.1 "tail -50 /tmp/state.log"
+```
+
+#### 4. 多机器人监控
+在每个机器人上分别启动 brain_node，然后在任意一台机器人上查看 `/tmp/state.log`，可以看到自己和所有队友的状态。
+
+### 技术细节
+
+**线程安全：**
+- StateLogger 使用独立线程运行
+- 使用 `std::mutex` 保护共享状态
+- Brain 主线程通过 `updateState()` 更新快照
+
+**性能优化：**
+- 100ms 更新间隔（10Hz），不影响主控制循环（100Hz）
+- 字符串格式化在独立线程完成
+- 文件追加写入，自动刷新
+
+**数据来源映射：**
+| 显示信息 | 数据来源 |
+|---------|---------|
+| Player ID | `config->playerId` / `i + 1` |
+| Cost | `data->tmMyCost` / `tm.cost` |
+| Leader | `data->tmImLead` / `tm.isLead` |
+| VisionKick | `data->tmImInVisualKick` / `tm.isInVisualKick` |
+| State | `tree->getEntry<string>("decision")` |
+| Position | `data->robotPoseToField` / `tm.robotPoseToField` |
+| Velocity | `client->getLastVx/Vy/Vtheta()` |
+| Ball Detected | `data->ballDetected` / `tm.ballDetected` |
+| Ball Info | `data->ball` / `tm.ballPosToField` |
+| Collision | 计算队友距离，检查是否 < 1.2m |
+
+**碰撞避让判定逻辑：**
+```cpp
+if (closestTeammateDistance < 1.2) {
+    collisionAvoidanceActive = true;
+    if (distance < 0.8) {
+        avoidanceSpeedFactor = 0.5;  // 最小距离区
+    } else {
+        // 线性插值
+        speedFactor = 0.5 + (1.0 - 0.5) * (distance - 0.8) / 0.4;
+    }
+}
+```
+
+### 调试建议
+
+**日志文件位置：**
+- 默认：`/tmp/state.log`
+- 可在 `Brain::init()` 中修改路径
+
+**调整更新频率：**
+在 `state_logger.cpp` 的 `logLoop()` 中修改：
+```cpp
+std::this_thread::sleep_for(std::chrono::milliseconds(100));  // 改为 50ms = 20Hz
+```
+
+**查看特定机器人：**
+```bash
+tail -f /tmp/state.log | grep "ROBOT #2"
+```
+
+**性能监控：**
+```bash
+# 查看日志文件大小增长速度
+watch -n 1 "ls -lh /tmp/state.log"
+
+# 截断日志文件（如果太大）
+> /tmp/state.log
+```
+
+### 预期效果
+
+**优点：**
+- ✅ 实时监控所有机器人状态，无需连接到每台机器
+- ✅ 清晰的表格格式，易于阅读和分析
+- ✅ 独立线程运行，不影响主控制性能
+- ✅ 碰撞避让状态可视化，方便调试防碰撞逻辑
+- ✅ 支持多机协作调试，所有队友信息一目了然
+
+**注意事项：**
+- 依赖队友通信（UDP）的实时性
+- 队友状态有通信延迟（<1000ms）
+- 日志文件会持续增长，建议定期清理
+- 不记录历史状态，只显示当前快照
+
+### 未来扩展
+
+**可能的改进方向：**
+- 添加历史状态回放功能
+- 支持网络远程查看（HTTP/WebSocket）
+- 添加图形化界面（ncurses/web UI）
+- 记录关键事件时间线
+- 支持多文件轮转（避免单文件过大）
+- 添加性能统计（CPU、内存、延迟）
+
+---
+
 ## 2026-09-29 全局队友防碰撞系统
 
 ### 修改目的

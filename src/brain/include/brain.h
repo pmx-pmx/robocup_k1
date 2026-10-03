@@ -44,6 +44,7 @@
 #include "locator.h"
 #include "robot_client.h"
 #include "ball_state_estimator.h"
+#include "state_logger.h"
 
 
 using namespace std;
@@ -77,6 +78,9 @@ public:
     // Communication 对象，里面包含通信相关的操作，主要是双机通信和裁判机通信
     std::shared_ptr<BrainCommunication> communication;
     std::unique_ptr<ball_state_estimator::BallStateEstimator> ballStateEstimator;
+
+    // StateLogger 对象，用于实时状态日志输出
+    std::unique_ptr<StateLogger> stateLogger;
 
     // 构造函数，接受 nodeName 创建 ros2 结点
     Brain();
@@ -267,6 +271,9 @@ private:
 
     // 处理多机配合逻辑
     void handleCooperation();
+
+    // 更新状态日志
+    void updateStateLogger();
 
     // 里程计与视觉/行为树回调共享 BrainData。tick 和回调跨线程运行，必须使用同一把锁。
     mutable std::recursive_mutex brainStateMutex_;

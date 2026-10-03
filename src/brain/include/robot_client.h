@@ -48,6 +48,11 @@ public:
     */
     int setVelocity(double x, double y, double theta, bool applyMinX=true, bool applyMinY=true, bool applyMinTheta=true);
 
+    // Return the most recently commanded body velocity.
+    double getLastVx() const { return _vx; }
+    double getLastVy() const { return _vy; }
+    double getLastVtheta() const { return _vtheta; }
+
     // 在不转向的情况下, 以某个角度和速度移动
     int crabWalk(double angle, double speed);
 
@@ -148,7 +153,7 @@ private:
     int call(booster_interface::msg::BoosterApiReqMsg msg);
     rclcpp::Publisher<booster_msgs::msg::RpcReqMsg>::SharedPtr publisher;
     Brain *brain;
-    double _vx, _vy, _vtheta;
+    double _vx = 0.0, _vy = 0.0, _vtheta = 0.0;
     rclcpp::Time _lastCmdTime;
     rclcpp::Time _lastNonZeroCmdTime;
 };
