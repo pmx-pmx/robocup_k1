@@ -392,6 +392,7 @@ void BrainTree::init()
     REGISTER_BUILDER(GoToGoalBlockingPosition)
     REGISTER_BUILDER(TurnOnSpot)
     REGISTER_BUILDER(MoveToPoseOnField)
+    REGISTER_BUILDER(GoalieHandoffReturn)
     REGISTER_BUILDER(GoBackInField)
     REGISTER_BUILDER(Analyze2)
     REGISTER_BUILDER(GoalieIdleHome)
@@ -470,6 +471,7 @@ void BrainTree::initEntry()
 
     setEntry<bool>("we_just_scored", false);
     setEntry<bool>("wait_for_opponent_kickoff", false);
+    setEntry<bool>("goalie_handoff_returning", false);
 
     // 自动视觉校准相关
     setEntry<string>("calibrate_state", "pitch");
@@ -1544,9 +1546,29 @@ NodeStatus Assist::tick() {
         vy = speed * sin(avoidDir);
         vtheta = brain->data->ball.yawToRobot;
     } else {
-        vx = targetPose_r.x;
-        vy = targetPose_r.y;
+        // 使用比例控制，而不是直接用距离作为速度
+        // 修复圆周运动问题：距离越远速度越快，但不超过最大速度
+        const double dist = std::hypot(targetPose_r.x, targetPose_r.y);
+        const double speedGain = 0.8;  // 速度增益：距离1米时速度0.8m/s
+        const double maxSpeed = 1.2;   // 最大速度限制
+
+        if (dist > 0.01) {
+            const double targetSpeed = std::min(speedGain * dist, maxSpeed);
+            vx = targetSpeed * targetPose_r.x / dist;
+            vy = targetSpeed * targetPose_r.y / dist;
+        } else {
+            vx = 0.0;
+            vy = 0.0;
+        }
         vtheta = brain->data->ball.yawToRobot * 2.0; // 后面的乘数越大, 转身越快
+
+        // 调试日志：记录 Assist 运动状态
+        log(format("Assist move: dist=%.2f, targetSpeed=%.2f, vx=%.2f, vy=%.2f, vtheta=%.2f, "
+                   "targetField=(%.2f,%.2f), targetRobot=(%.2f,%.2f)",
+                   dist, dist > 0.01 ? std::min(speedGain * dist, maxSpeed) : 0.0,
+                   vx, vy, vtheta,
+                   targetPose.x, targetPose.y,
+                   targetPose_r.x, targetPose_r.y));
     }
 
 
@@ -2007,6 +2029,7 @@ NodeStatus StrikerDecide::tick() {
     string newDecision;
     auto color = 0xFFFFFFFF; // for log
     const bool nearBallVisualKick =
+        !brain->tree->getEntry<bool>("goalie_handoff_returning") &&
         enableAutoVisualKick &&
         !nonDirectRestartFirstKick &&
         brain->data->tmImLead &&   //只有lead才进入视觉踢球
@@ -2100,6 +2123,9 @@ NodeStatus StrikerDecide::tick() {
         color = 0xFFFF00FF;
     }
 
+    if (brain->tree->getEntry<bool>("goalie_handoff_returning")) {
+        newDecision = "adjust";
+    }
     if (newDecision != "auto_visual_kick" && newDecision != "kickoff_visual_kick") {
         brain->data->tmImInVisualKick = false;
     }
@@ -2312,6 +2338,38 @@ NodeStatus Analyze2::tick()
     }
     brain->tree->setEntry<string>("goalie_mode", nextMode);
     return NodeStatus::SUCCESS;
+}
+
+NodeStatus GoalieHandoffReturn::tick()
+{
+    if (brain->data->goalieHandoffState != GoalieHandoffState::Returning &&
+        brain->data->goalieHandoffState != GoalieHandoffState::Accepted) {
+        brain->client->setVelocity(0.0, 0.0, 0.0, false, false, false);
+        return NodeStatus::SUCCESS;
+    }
+    const auto &target = brain->data->goalieHandoffTargetField;
+    const auto &pose = brain->data->robotPoseToField;
+    const double tolerance = brain->get_parameter("strategy.goalie_handoff.return_tolerance").as_double();
+    const double vxLimit = brain->get_parameter("strategy.goalie_handoff.return_vx_limit").as_double();
+    const double vyLimit = brain->get_parameter("strategy.goalie_handoff.return_vy_limit").as_double();
+    const double vthetaLimit = brain->get_parameter("strategy.goalie_handoff.return_vtheta_limit").as_double();
+    const double dx = target.x - pose.x;
+    const double dy = target.y - pose.y;
+    const double dist = std::hypot(dx, dy);
+    const double thetaError = toPInPI(-pose.theta);
+    if (dist <= tolerance && std::abs(thetaError) <= 0.2) {
+        brain->client->setVelocity(0.0, 0.0, 0.0, false, false, false);
+        brain->data->goalieHandoffState = GoalieHandoffState::Ready;
+        brain->data->goalieHandoffLastProgressTime = brain->get_clock()->now();
+        brain->data->goalieHandoffReason = "receiver_ready_at_goal";
+        return NodeStatus::SUCCESS;
+    }
+    const auto targetRobot = brain->data->field2robot({target.x, target.y, 0.0});
+    const double vx = std::clamp(1.8 * targetRobot.x, -vxLimit, vxLimit);
+    const double vy = std::clamp(1.8 * targetRobot.y, -vyLimit, vyLimit);
+    const double vtheta = std::clamp(1.5 * thetaError, -vthetaLimit, vthetaLimit);
+    brain->client->setVelocity(vx, vy, vtheta, false, false, false);
+    return NodeStatus::RUNNING;
 }
 
 NodeStatus GoalieIdleHome::tick()

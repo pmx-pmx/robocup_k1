@@ -13,6 +13,7 @@
             <!-- <StepOnSpot /> -->
          </ReactiveSequence>
          <ReactiveSequence _while="!wait_for_opponent_kickoff" name="/正常比赛, 即已方开球或对方已经开球">
+            <GoalieHandoffReturn _while="goalie_handoff_returning" />
             <ReactiveSequence
                _while="gc_opponent_set_play_search_direction != 0"
                name="我方门球或角球的远距离找球">
@@ -39,7 +40,7 @@
                         <RobotFindBall _while="decision == 'find'" vyaw_limit="2.5" />
                      </ReactiveSequence>
                         <KickoffStand _while="decision == 'kickoff_hold'" dist_tolerance="0.5" theta_tolerance="0.2" vx_limit="0.6" vy_limit="0.5" hold_vtheta_limit="0.6" />
-                        <Assist _while="decision == 'assist'" vx_limit = "3.0" vy_limit="1.8" />
+                        <Assist _while="decision == 'assist'" vx_limit="1.2" vy_limit="0.8" dist_tolerance="1.0" theta_tolerance="0.5" />
                         <!-- <Chase3   _while="decision == 'chase'"  vx_limit="1.5"  vy_limit="0.3"  vtheta_limit="1.5"  dist="0.4" safe_dist="0.6" /> -->
                         <Chase   _while="decision == 'chase'"  vx_limit="2.5"  vy_limit="1.8"  vtheta_limit="1.8"  dist="0.1" safe_dist="0.5" />
                         <RLVisionKick _while="decision == 'auto_visual_kick' || decision == 'kickoff_visual_kick'" min_msec_kick="800" max_msec_kick="7000" range="6.0"/>
